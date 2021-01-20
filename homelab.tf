@@ -8,70 +8,102 @@ terraform {
   }
 }
 
-# variables that can be overriden
-variable "hostname" { default = "elastic01" }
-variable "domain" { default = "home.lab" }
-variable "memoryMB" { default = 1024*2 }
-variable "cpu" { default = 2 }
+variable "domain" {
+  default = "home.lab"
+}
 
-# instance the provider
+variable "rootdiskBytes" {
+    default = 1024*1024*1024*30
+}
+
+variable "templatePath" {
+    default = "/mnt/md0/kvm"
+}
+
 provider "libvirt" {
   uri = "qemu:///system"
 }
 
-# fetch the latest ubuntu release image from their mirrors
-resource "libvirt_volume" "os_image" {
-  name = "${var.hostname}-os_image"
-  pool = "default"
-  source = "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
-  format = "qcow2"
-}
+#TODO fix download image within this tf file
+#Create base template for all VMS
+# resource "libvirt_volume" "os_image" {
+#   name = "ubuntu-template.qcow2"
+#   pool = "default"
+#   source = "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
+#   format = "qcow2"
+# }
 
-# Use CloudInit ISO to add ssh-key to the instance
-resource "libvirt_cloudinit_disk" "commoninit" {
-          name = "${var.hostname}-commoninit.iso"
+##-----ELASTIC01-----
+
+#TODO fix cloudinit network setup
+# Use CloudInit ISO to add various things to the base iso
+resource "libvirt_cloudinit_disk" "elastic01_init" {
+          name = "elastic01-commoninit.iso"
           pool = "default"
-          user_data = data.template_file.user_data.rendered
-          network_config = data.template_file.network_config.rendered
+          user_data = data.template_file.elastic01_user_data.rendered
+          #network_config = data.template_file.elastic01_network_config.rendered
 }
 
-
-data "template_file" "user_data" {
-  template = file("${path.module}/cloud_init.cfg")
+data "template_file" "elastic01_user_data" {
+  template = file("${path.module}/cloud_init/cloud_init_base.cfg")
   vars = {
-    hostname = var.hostname
-    fqdn = "${var.hostname}.${var.domain}"
+    hostname = "elastic01"
+    fqdn = "elastic01${var.domain}"
   }
 }
 
-data "template_file" "network_config" {
-  template = file("${path.module}/network_config_dhcp.cfg")
+#elastic01 cloud init network config
+data "template_file" "elastic01_network_config" {
+  template = file("${path.module}/cloud_init/network_config.cfg")
+  vars = {
+      addresses = "192.168.100.10/24"
+      gateway = "192.168.100.1"
+      nsaddresses = "8.8.8.8"
+      searchdomain = "home.lab"
+  }
 }
 
 
-# CreateVM
+#create elastic01 osdisk - link from ubuntu-template
+resource "libvirt_volume" "elastic01_os_image" {
+  name = "elastic01.qcow2"
+  
+  # can specify size larger than backing disk
+  # but would need to be extended at OS level to be recognized
+  size = var.rootdiskBytes
+
+  # parent disk
+  base_volume_pool = "default"
+  base_volume_name = "ubuntu-template.qcow2"
+}  
+
+# resource "libvirt_volume" "elastic01_os_image" {
+#   name = "elastic01.qcow2"
+#   pool = "default"
+#   source = "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
+#   format = "qcow2"
+# }
+
+#create elastic01 VM
 resource "libvirt_domain" "domain-ubuntu" {
-  name = var.hostname
-  memory = var.memoryMB
-  vcpu = var.cpu
+  name = "elastic01"
+  memory = 2048
+  vcpu = 2
 
   disk {
-       volume_id = libvirt_volume.os_image.id
+       volume_id = libvirt_volume.elastic01_os_image.id
   }
   network_interface {
        network_name = "default"
   }
 
-  cloudinit = libvirt_cloudinit_disk.commoninit.id
+  cloudinit = libvirt_cloudinit_disk.elastic01_init.id
 
-  # IMPORTANT
-  # Ubuntu can hang is a isa-serial is not present at boot time.
-  # If you find your CPU 100% and never is available this is why
-#   console {
-#     type        = "pty"
-#     target_port = "0"
-#     target_type = "serial"
-#   }
+console {
+    type        = "pty"
+    target_port = "0"
+    target_type = "serial"
+  }
 
   graphics {
     type = "spice"
@@ -80,11 +112,11 @@ resource "libvirt_domain" "domain-ubuntu" {
   }
 }
 
+##-----ELASTIC02-----
+#TODO add more VMS
+
+
 terraform { 
   required_version = ">= 0.12"
 }
 
-output "ips" {
-  # show IP, run 'terraform refresh' if not populated
-  value = libvirt_domain.domain-ubuntu.*.network_interface.0.addresses
-}
